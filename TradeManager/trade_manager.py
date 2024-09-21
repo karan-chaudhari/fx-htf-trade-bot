@@ -1,4 +1,5 @@
 import MetaTrader5 as mt5
+import os
 from logger.logger import logger
 
 
@@ -13,11 +14,11 @@ class TradeManager:
         positions = mt5.positions_get(symbol=symbol)
         if positions is None:
             return True  # No positions open
-        return len(positions) < 2
+        return len(positions) < int(os.getenv('NO_OF_POS'))
 
     def place_order(self, symbol, action):
         if not self.can_open_position(symbol):
-            logger.info(f"Cannot open more than 2 positions for {symbol}.")
+            logger.info(f"Cannot open more than {int(os.getenv('NO_OF_POS'))} positions for {symbol}.")
             return
 
         order_type = mt5.ORDER_TYPE_BUY if action == "buy" else mt5.ORDER_TYPE_SELL
@@ -108,7 +109,6 @@ class TradeManager:
                 if position.profit >= 0.1:
                     logger.info(f"Profit target reached on {position.symbol}! Closing trade.")
                     self.close_order(position.ticket, position.symbol, position.volume)
-                    return True
         else:
             logger.info(f"No open positions for {position.symbol}.")
 

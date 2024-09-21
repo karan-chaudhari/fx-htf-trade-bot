@@ -25,7 +25,7 @@ if __name__ == "__main__":
     if not connector.initialize():
         exit(1)
         
-    volume = 0.1
+    volume = float(os.getenv('TRADE_VOL'))
     trade_manager = TradeManager(volume)
 
     try:
@@ -34,11 +34,11 @@ if __name__ == "__main__":
             trade_manager.monitor_trade()
 
             for symbol in symbols:
-                rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 100)
+                rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, 0, 100)
                 close_prices = np.array([rate['close'] for rate in rates])
 
                 indicator_calculator = IndicatorCalculator()
-                signals = indicator_calculator.check_signals(close_prices)
+                signals = indicator_calculator.check_signals(symbol, close_prices)
 
                 # Place orders based on signals
                 for strategy, signal in signals.items():
