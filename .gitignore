@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+*.venv/
+*.env
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Pytest
+.cache/
+*.log
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Other
+*.DS_Store
+*.bak
+*.tmp
