@@ -2,10 +2,13 @@ import time
 import os
 import MetaTrader5 as mt5
 import numpy as np
+from dotenv import load_dotenv 
 from MT5Connector.mt5_connector import MT5Connector
 from StrategyManager.indicator import IndicatorCalculator
 from TradeManager.trade_manager import TradeManager
 
+# Load environment variables from .env file
+load_dotenv()
 
 # Main execution
 if __name__ == "__main__":
@@ -13,11 +16,13 @@ if __name__ == "__main__":
     password = os.getenv('MT5_PASSWORD')
     server = os.getenv('MT5_SERVER')
 
+    # Get symbols from the environment variable
+    symbols = os.getenv('MT5_SYMBOLS').split(',')
+
     connector = MT5Connector(account_number, password, server)
     if not connector.initialize():
         exit(1)
-
-    symbols = ["BTCUSDm", "BTCAUDm", "ETHUSDm", "BTCXAUm"] 
+        
     volume = 0.1
     trade_manager = TradeManager(volume)
 
