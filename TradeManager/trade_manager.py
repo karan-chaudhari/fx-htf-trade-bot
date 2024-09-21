@@ -1,4 +1,5 @@
 import MetaTrader5 as mt5
+from logger.logger import logger
 
 
 class TradeManager:
@@ -16,7 +17,7 @@ class TradeManager:
 
     def place_order(self, symbol, action):
         if not self.can_open_position(symbol):
-            print(f"Cannot open more than 2 positions for {symbol}.")
+            logger.info(f"Cannot open more than 2 positions for {symbol}.")
             return
 
         order_type = mt5.ORDER_TYPE_BUY if action == "buy" else mt5.ORDER_TYPE_SELL
@@ -37,16 +38,16 @@ class TradeManager:
 
         result = mt5.order_send(order_request)
         if result.retcode != mt5.TRADE_RETCODE_DONE:
-            print(f"Failed to place order for {symbol}: {result.retcode}")
+            logger.error(f"Failed to place order for {symbol}: {result.retcode}")
         else:
-            print(f"Order placed successfully for {symbol}")
+            logger.info(f"Order placed successfully for {symbol}")
 
     # Function to close an open position
     def close_order(self, position_id, symbol, volume):
         # Retrieve the current position based on the position ID
         position = mt5.positions_get(ticket=position_id)
         if position is None or len(position) == 0:
-            print(f"Failed to find position with ID {position_id} for {symbol}. Error: {mt5.last_error()}")
+            logger.error(f"Failed to find position with ID {position_id} for {symbol}. Error: {mt5.last_error()}")
             return None
 
         # Determine the order type (opposite of the current position type)
@@ -58,7 +59,7 @@ class TradeManager:
         # Retrieve the symbol info to determine supported filling modes
         symbol_info = mt5.symbol_info(symbol)
         if not symbol_info:
-            print(f"Failed to retrieve symbol info for {symbol}. Error: {mt5.last_error()}")
+            logger.error(f"Failed to retrieve symbol info for {symbol}. Error: {mt5.last_error()}")
             return None
 
         # Select a supported filling mode; adjust if ORDER_FILLING_RETURN is not supported
@@ -82,7 +83,7 @@ class TradeManager:
         # Send the close request
         result = mt5.order_send(close_request)
         if result.retcode == mt5.TRADE_RETCODE_DONE:
-            print(f"Successfully closed position {position_id} on {symbol}")
+            logger.info(f"Successfully closed position {position_id} on {symbol}")
             return result
         else:
             # Try another filling mode if supported
@@ -90,10 +91,10 @@ class TradeManager:
                 close_request["type_filling"] = mt5.ORDER_FILLING_IOC  # Immediate or Cancel as an alternative
                 result = mt5.order_send(close_request)
                 if result.retcode == mt5.TRADE_RETCODE_DONE:
-                    print(f"Successfully closed position {position_id} on {symbol} using IOC filling mode")
+                    logger.info(f"Successfully closed position {position_id} on {symbol} using IOC filling mode")
                     return result
                 else:
-                    print(f"Retry failed. Error: {result.comment}")
+                    logger.error(f"Retry failed. Error: {result.comment}")
             return None
 
     def monitor_trade(self):
@@ -101,13 +102,13 @@ class TradeManager:
         positions = mt5.positions_get()
         if positions:
             for position in positions:
-                print(f"Position {position.ticket}: {position.type} - Volume: {position.volume} - Profit: {position.profit}")
+                logger.info(f"Position {position.ticket}: {position.type} - Volume: {position.volume} - Profit: {position.profit}")
                 # Close the trade if profit target is met
                 # if current_profit >= profit_target:
                 if position.profit >= 0.1:
-                    print(f"Profit target reached on {position.symbol}! Closing trade.")
+                    logger.info(f"Profit target reached on {position.symbol}! Closing trade.")
                     self.close_order(position.ticket, position.symbol, position.volume)
                     return True
         else:
-            print(f"No open positions for {position.symbol}.")
+            logger.info(f"No open positions for {position.symbol}.")
 

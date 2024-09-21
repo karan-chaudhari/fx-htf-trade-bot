@@ -6,12 +6,14 @@ from dotenv import load_dotenv
 from MT5Connector.mt5_connector import MT5Connector
 from StrategyManager.indicator import IndicatorCalculator
 from TradeManager.trade_manager import TradeManager
+from logger.logger import logger
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Main execution
 if __name__ == "__main__":
+    logger.info("Starting the application...")
     account_number = int(os.getenv('MT5_ACCOUNT'))
     password = os.getenv('MT5_PASSWORD')
     server = os.getenv('MT5_SERVER')
@@ -48,7 +50,7 @@ if __name__ == "__main__":
             time.sleep(60)
 
     except KeyboardInterrupt:
-        print("Trading bot stopped by user.")
+        logger.error("Trading bot stopped by user.")
 
     finally:
         connector.shutdown()
