@@ -1,8 +1,10 @@
-from talib import RSI, SMA, MACD
+from talib import RSI, SMA, MACD, ATR, STOCH
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score
 import pandas as pd
+import numpy as np
 from logger.logger import logger
 
 class IndicatorCalculator:
@@ -20,6 +22,15 @@ class IndicatorCalculator:
     def calculate_macd(data):
         macd, macdsignal, _ = MACD(data)
         return macd, macdsignal
+
+    @staticmethod
+    def calculate_atr(high, low, close, period=14):
+        return ATR(high, low, close, timeperiod=period)
+
+    @staticmethod
+    def calculate_stoch(high, low, close):
+        slowk, slowd = STOCH(high, low, close)
+        return slowk, slowd
 
     def check_signals(self, symbol, close_prices):
         signals = {}
@@ -61,11 +72,12 @@ class IndicatorCalculator:
 
 class MLIndicatorCalculator(IndicatorCalculator):
     def __init__(self):
-        self.model = RandomForestClassifier(n_estimators=100, random_state=42)
+        self.model = RandomForestClassifier(random_state=42)
         self.scaler = StandardScaler()
+        self.is_model_trained = False
 
-    def prepare_features(self, close_prices):
-        if len(close_prices) < 200:  # Ensure we have enough data for the longest SMA
+    def prepare_features(self, high, low, close_prices):
+        if len(close_prices) < 200:
             logger.error("Not enough close prices to calculate indicators.")
             raise ValueError("Not enough close prices to calculate indicators.")
 
@@ -74,9 +86,8 @@ class MLIndicatorCalculator(IndicatorCalculator):
         sma_200 = self.calculate_sma(close_prices, 200)
         rsi = self.calculate_rsi(close_prices)
         macd, macdsignal = self.calculate_macd(close_prices)
-
-        # Log lengths
-        logger.info(f"Lengths - SMA 50: {len(sma_50)}, SMA 200: {len(sma_200)}, RSI: {len(rsi)}, MACD: {len(macd)}, MACD Signal: {len(macdsignal)}")
+        atr = self.calculate_atr(high, low, close_prices)
+        stoch_k, stoch_d = self.calculate_stoch(high, low, close_prices)
 
         # Combine features into a DataFrame
         data = pd.DataFrame({
@@ -84,51 +95,95 @@ class MLIndicatorCalculator(IndicatorCalculator):
             'sma_200': sma_200,
             'rsi': rsi,
             'macd': macd,
-            'macdsignal': macdsignal
+            'macdsignal': macdsignal,
+            'atr': atr,
+            'stoch_k': stoch_k,
+            'stoch_d': stoch_d
         })
 
         # Drop NaN values (if any)
         data.dropna(inplace=True)
 
-        # Log the length of the DataFrame after dropping NaN values
         logger.info(f"Data length after dropping NaN: {len(data)}")
 
-        # Check if the data is empty after dropping NaNs
         if len(data) == 0:
-            logger.error("No valid data after dropping NaNs. Unable to create target column.")
+            logger.error("No valid data after dropping NaNs.")
             raise ValueError("No valid data after dropping NaNs.")
 
         # Create target
-        target_start_index = len(close_prices) - len(data) - 1  # Adjust index based on dropped rows
+        target_start_index = len(close_prices) - len(data) - 1
         if target_start_index + 1 + len(data) <= len(close_prices):
-            data['target'] = (close_prices[target_start_index + 1:target_start_index + 1 + len(data)] > close_prices[target_start_index:target_start_index + len(data)]).astype(int)
+            data['target'] = (
+                close_prices[target_start_index + 1:target_start_index + 1 + len(data)]
+                > close_prices[target_start_index:target_start_index + len(data)]
+            ).astype(int)
         else:
             logger.error("Target creation out of bounds.")
             raise ValueError("Target creation out of bounds.")
 
-        # Ensure the target column was created
         if 'target' not in data.columns:
             logger.error("Target column not created.")
             raise KeyError("Target column not created.")
 
         return data.drop('target', axis=1), data['target']
 
-    def train_model(self, close_prices):  # This method expects only one argument
-        X, y = self.prepare_features(close_prices)
+    def train_model(self, high, low, close_prices):
+        X, y = self.prepare_features(high, low, close_prices)
         X_scaled = self.scaler.fit_transform(X)
 
-        X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
-        self.model.fit(X_train, y_train)
-        logger.info(f"Model trained with accuracy: {self.model.score(X_test, y_test)}")
+        # Define parameter grid for GridSearchCV
+        param_grid = {
+            'n_estimators': [100, 200, 300],
+            'max_depth': [None, 10, 20],
+            'min_samples_split': [2, 5, 10],
+            'min_samples_leaf': [1, 2, 4],
+            'bootstrap': [True, False]
+        }
 
-    def predict_signal(self, close_prices):
-        X, _ = self.prepare_features(close_prices)
-        X_scaled = self.scaler.transform(X)
-        predictions = self.model.predict(X_scaled)
-        # Decision logic based on the latest prediction
-        if predictions[-1] == 1:
-            logger.info("ML Buy Signal detected")
-            return "buy"
+        # Use n_jobs=1 to run GridSearchCV in the main thread
+        grid_search = GridSearchCV(self.model, param_grid, cv=5, scoring='accuracy', n_jobs=1, verbose=2)
+        grid_search.fit(X_scaled, y)
+
+        # Use the best estimator from the Grid Search
+        self.model = grid_search.best_estimator_
+        logger.info(f"Best Parameters: {grid_search.best_params_}")
+
+        # Evaluate on a test split to confirm performance
+        X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+        y_pred = self.model.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred) * 100
+        logger.info(f"Model trained with accuracy: {accuracy:.2f}%")
+
+        if accuracy >= 60:
+            self.is_model_trained = True
+            logger.info("Model accuracy is above 60%, trades are allowed.")
         else:
-            logger.info("ML Sell Signal detected")
-            return "sell"
+            self.is_model_trained = False
+            logger.info("Model accuracy is below 60%, no trades will be allowed.")
+
+    def predict_signal(self, high, low, close_prices):
+        if not self.is_model_trained:
+            logger.info("Model not trained or accuracy below 60%, no trades allowed.")
+            return "trade not allowed"
+
+        try:
+            X, _ = self.prepare_features(high, low, close_prices)
+            X_scaled = self.scaler.transform(X)
+            predictions = self.model.predict(X_scaled)
+
+            if len(predictions) == 0:
+                logger.info("No trades available. Trade not found.")
+                return "trade not found"
+
+            if predictions[-1] == 1:
+                logger.info("ML Buy Signal detected")
+                return "buy"
+            elif predictions[-1] == 0:
+                logger.info("ML Sell Signal detected")
+                return "sell"
+            else:
+                logger.info("No valid trade signal found.")
+                return "trade not found"
+        except Exception as e:
+            logger.error(f"Error predicting trade signal: {str(e)}")
+            return "error"
