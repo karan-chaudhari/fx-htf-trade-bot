@@ -116,7 +116,7 @@ if __name__ == "__main__":
                 elif signal == "sell":
                     trade_manager.place_order(symbol, "sell")
 
-            time.sleep(60)
+            time.sleep(30)
             logger.info("Checking for next trade")
 
     except KeyboardInterrupt:

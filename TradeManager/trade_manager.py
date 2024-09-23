@@ -110,5 +110,5 @@ class TradeManager:
                     logger.info(f"Profit target reached on {position.symbol}! Closing trade.")
                     self.close_order(position.ticket, position.symbol, position.volume)
         else:
-            logger.info(f"No open positions for {position.symbol}.")
+            logger.info(f"No open positions.")
 
