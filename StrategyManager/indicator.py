@@ -1,74 +1,56 @@
-from talib import RSI, SMA, MACD, ATR, STOCH
+import pandas as pd
+import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
-import pandas as pd
-import numpy as np
+import ta
 from logger.logger import logger
 
 class IndicatorCalculator:
-    """Calculates indicators for trading signals."""
+    """Calculates both traditional and price action/SMC indicators for trading signals.""" 
+    
+    def calculate_traditional_indicators(self, df):
+        # Add technical indicators to the DataFrame using the ta library
+        df['rsi'] = ta.momentum.RSIIndicator(df['close']).rsi()
+        df['sma'] = ta.trend.SMAIndicator(df['close'], window=14).sma_indicator()
+        df['ema'] = ta.trend.EMAIndicator(df['close'], window=14).ema_indicator()
+        df['adx'] = ta.trend.ADXIndicator(df['high'], df['low'], df['close']).adx()
+        df['macd'] = ta.trend.MACD(df['close']).macd()
+        df.dropna(inplace=True)  # Drop rows with NaN values (created due to indicators)
+        return df
 
-    @staticmethod
-    def calculate_sma(data, period):
-        return SMA(data, timeperiod=period)
+    def detect_swing_highs(self, high, lookback=5):
+        # Detect swing highs: if the high is greater than the previous `lookback` periods
+        swing_highs = np.zeros(len(high))
 
-    @staticmethod
-    def calculate_rsi(data, period=14):
-        return RSI(data, timeperiod=period)
+        # Ensure that lookback is within bounds
+        for i in range(lookback, len(high) - lookback):
+            # Use iloc for integer-based indexing
+            if (high.iloc[i] > high.iloc[i - lookback:i].max() and
+                high.iloc[i] > high.iloc[i + 1:i + lookback + 1].max()):
+                swing_highs[i] = 1
 
-    @staticmethod
-    def calculate_macd(data):
-        macd, macdsignal, _ = MACD(data)
-        return macd, macdsignal
+        return pd.Series(swing_highs, index=high.index)
 
-    @staticmethod
-    def calculate_atr(high, low, close, period=14):
-        return ATR(high, low, close, timeperiod=period)
+    def detect_swing_lows(self, low, lookback=5):
+        # Detect swing lows: if the low is lower than the previous `lookback` periods
+        swing_lows = np.zeros(len(low))
 
-    @staticmethod
-    def calculate_stoch(high, low, close):
-        slowk, slowd = STOCH(high, low, close)
-        return slowk, slowd
+        # Ensure that lookback is within bounds
+        for i in range(lookback, len(low) - lookback):
+            # Use iloc for integer-based indexing
+            if (low.iloc[i] < low.iloc[i - lookback:i].min() and
+                low.iloc[i] < low.iloc[i + 1:i + lookback + 1].min()):
+                swing_lows[i] = 1
 
-    def check_signals(self, symbol, close_prices):
-        signals = {}
-        signals['sma'] = self.check_sma_signal(symbol, close_prices)
-        signals['rsi'] = self.check_rsi_signal(symbol, close_prices)
-        signals['macd'] = self.check_macd_signal(symbol, close_prices)
-        return signals
+        return pd.Series(swing_lows, index=low.index)
 
-    def check_sma_signal(self, symbol, close_prices):
-        sma_50 = self.calculate_sma(close_prices, 50)
-        sma_200 = self.calculate_sma(close_prices, 200)
-        if sma_50[-1] > sma_200[-1]:
-            logger.info(f"SMA Buy Signal detected on {symbol}")
-            return "buy"
-        elif sma_50[-1] < sma_200[-1]:
-            logger.info(f"SMA Sell Signal detected on {symbol}")
-            return "sell"
-        return None
-
-    def check_rsi_signal(self, symbol, close_prices):
-        rsi = self.calculate_rsi(close_prices)
-        if rsi[-1] < 30:
-            logger.info(f"RSI Buy Signal detected on {symbol} (RSI: {rsi[-1]})")
-            return "buy"
-        elif rsi[-1] > 70:
-            logger.info(f"RSI Sell Signal detected on {symbol} (RSI: {rsi[-1]})")
-            return "sell"
-        return None
-
-    def check_macd_signal(self, symbol, close_prices):
-        macd, macdsignal = self.calculate_macd(close_prices)
-        if macd[-1] > macdsignal[-1]:
-            logger.info(f"MACD Buy Signal detected on {symbol}")
-            return "buy"
-        elif macd[-1] < macdsignal[-1]:
-            logger.info(f"MACD Sell Signal detected on {symbol}")
-            return "sell"
-        return None
+    def detect_support_resistance(self, close_prices, window=10):
+        # Calculate basic support/resistance zones by looking for price clusters
+        support = pd.Series(close_prices).rolling(window).min()
+        resistance = pd.Series(close_prices).rolling(window).max()
+        return support, resistance
 
 class MLIndicatorCalculator(IndicatorCalculator):
     def __init__(self):
@@ -76,59 +58,51 @@ class MLIndicatorCalculator(IndicatorCalculator):
         self.scaler = StandardScaler()
         self.is_model_trained = False
 
-    def prepare_features(self, high, low, close_prices):
-        if len(close_prices) < 200:
-            logger.error("Not enough close prices to calculate indicators.")
-            raise ValueError("Not enough close prices to calculate indicators.")
+    def prepare_combined_features(self, df):
+        if len(df) < 200:
+            logger.error("Not enough data to calculate features.")
+            raise ValueError("Not enough data to calculate features.")
 
-        # Create features from traditional indicators
-        sma_50 = self.calculate_sma(close_prices, 50)
-        sma_200 = self.calculate_sma(close_prices, 200)
-        rsi = self.calculate_rsi(close_prices)
-        macd, macdsignal = self.calculate_macd(close_prices)
-        atr = self.calculate_atr(high, low, close_prices)
-        stoch_k, stoch_d = self.calculate_stoch(high, low, close_prices)
-
-        # Combine features into a DataFrame
-        data = pd.DataFrame({
-            'sma_50': sma_50,
-            'sma_200': sma_200,
-            'rsi': rsi,
-            'macd': macd,
-            'macdsignal': macdsignal,
-            'atr': atr,
-            'stoch_k': stoch_k,
-            'stoch_d': stoch_d
+        # Calculate traditional indicators
+        df = self.calculate_traditional_indicators(df)
+        
+        # Detect price action/SMC indicators
+        swing_highs = self.detect_swing_highs(df['high'])
+        swing_lows = self.detect_swing_lows(df['low'])
+        support, resistance = self.detect_support_resistance(df['close'])
+        
+        # Combine all features into a DataFrame
+        features = pd.DataFrame({
+            'swing_high': swing_highs,
+            'swing_low': swing_lows,
+            'support': support,
+            'resistance': resistance,
+            'rsi': df['rsi'],
+            'sma': df['sma'],
+            'ema': df['ema'],
+            'adx': df['adx'],
+            'macd': df['macd'],
         })
 
-        # Drop NaN values (if any)
-        data.dropna(inplace=True)
+        # Drop NaN values
+        features.dropna(inplace=True)
 
-        logger.info(f"Data length after dropping NaN: {len(data)}")
+        logger.info(f"Features data length after dropping NaN: {len(features)}")
 
-        if len(data) == 0:
-            logger.error("No valid data after dropping NaNs.")
-            raise ValueError("No valid data after dropping NaNs.")
+        if len(features) == 0:
+            logger.error("No valid features after dropping NaNs.")
+            raise ValueError("No valid features after dropping NaNs.")
 
-        # Create target
-        target_start_index = len(close_prices) - len(data) - 1
-        if target_start_index + 1 + len(data) <= len(close_prices):
-            data['target'] = (
-                close_prices[target_start_index + 1:target_start_index + 1 + len(data)]
-                > close_prices[target_start_index:target_start_index + len(data)]
-            ).astype(int)
-        else:
-            logger.error("Target creation out of bounds.")
-            raise ValueError("Target creation out of bounds.")
+        # Align the indices of df['close'] and features to create target labels
+        target_series = df['close'].iloc[len(df) - len(features):]  # Get the last `len(features)` entries
 
-        if 'target' not in data.columns:
-            logger.error("Target column not created.")
-            raise KeyError("Target column not created.")
+        # Create target labels (price direction)
+        features['target'] = (target_series.shift(-1) > target_series).astype(int)
 
-        return data.drop('target', axis=1), data['target']
+        return features.drop('target', axis=1), features['target']
 
-    def train_model(self, high, low, close_prices):
-        X, y = self.prepare_features(high, low, close_prices)
+    def train_model(self, df):
+        X, y = self.prepare_combined_features(df)
         X_scaled = self.scaler.fit_transform(X)
 
         # Define parameter grid for GridSearchCV
@@ -161,29 +135,23 @@ class MLIndicatorCalculator(IndicatorCalculator):
             self.is_model_trained = False
             logger.info("Model accuracy is below 60%, no trades will be allowed.")
 
-    def predict_signal(self, high, low, close_prices):
+    def predict_signal(self, df):
         if not self.is_model_trained:
             logger.info("Model not trained or accuracy below 60%, no trades allowed.")
             return "trade not allowed"
 
         try:
-            X, _ = self.prepare_features(high, low, close_prices)
+            X, _ = self.prepare_combined_features(df)
             X_scaled = self.scaler.transform(X)
             predictions = self.model.predict(X_scaled)
 
             if len(predictions) == 0:
-                logger.info("No trades available. Trade not found.")
-                return "trade not found"
+                logger.info("No predictions made.")
+                return "no signal"
 
-            if predictions[-1] == 1:
-                logger.info("ML Buy Signal detected")
-                return "buy"
-            elif predictions[-1] == 0:
-                logger.info("ML Sell Signal detected")
-                return "sell"
-            else:
-                logger.info("No valid trade signal found.")
-                return "trade not found"
+            signal = "buy" if predictions[-1] == 1 else "sell"
+            logger.info(f"Predicted signal: {signal}")
+            return signal
         except Exception as e:
-            logger.error(f"Error predicting trade signal: {str(e)}")
-            return "error"
+            logger.error(f"Error during prediction: {e}")
+            return "no signal"
