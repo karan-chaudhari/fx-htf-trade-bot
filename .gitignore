@@ -40,3 +40,4 @@ dmypy.json
 *.DS_Store
 *.bak
 *.tmp
+*.csv

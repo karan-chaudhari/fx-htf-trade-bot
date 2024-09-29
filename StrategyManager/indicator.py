@@ -84,6 +84,10 @@ class MLIndicatorCalculator(IndicatorCalculator):
             'macd': df['macd'],
         })
 
+        csv_filename = "features.csv"
+        features.to_csv(csv_filename, index=False)
+        logger.info(f"Features exported to {csv_filename}")
+
         # Drop NaN values
         features.dropna(inplace=True)
 
@@ -135,6 +139,27 @@ class MLIndicatorCalculator(IndicatorCalculator):
             self.is_model_trained = False
             logger.info("Model accuracy is below 60%, no trades will be allowed.")
 
+    # def predict_signal(self, df):
+    #     if not self.is_model_trained:
+    #         logger.info("Model not trained or accuracy below 60%, no trades allowed.")
+    #         return "trade not allowed"
+
+    #     try:
+    #         X, _ = self.prepare_combined_features(df)
+    #         X_scaled = self.scaler.transform(X)
+    #         predictions = self.model.predict(X_scaled)
+
+    #         if len(predictions) == 0:
+    #             logger.info("No predictions made.")
+    #             return "no signal"
+
+    #         signal = "buy" if predictions[-1] == 1 else "sell"
+    #         logger.info(f"Predicted signal: {signal}")
+    #         return signal
+    #     except Exception as e:
+    #         logger.error(f"Error during prediction: {e}")
+    #         return "no signal"
+
     def predict_signal(self, df):
         if not self.is_model_trained:
             logger.info("Model not trained or accuracy below 60%, no trades allowed.")
@@ -143,15 +168,39 @@ class MLIndicatorCalculator(IndicatorCalculator):
         try:
             X, _ = self.prepare_combined_features(df)
             X_scaled = self.scaler.transform(X)
-            predictions = self.model.predict(X_scaled)
+            probabilities = self.model.predict_proba(X_scaled)
 
-            if len(predictions) == 0:
+            if len(probabilities) == 0:
                 logger.info("No predictions made.")
                 return "no signal"
 
-            signal = "buy" if predictions[-1] == 1 else "sell"
+            # Get the probability of the positive class (buy) and negative class (sell)
+            buy_probability = probabilities[-1, 1]
+            sell_probability = probabilities[-1, 0]
+
+            # Set the confidence threshold for buy and sell
+            buy_threshold = 0.80  # 80% confidence for a buy signal
+            sell_threshold = 0.80  # 80% confidence for a sell signal (changed from 0.10)
+
+            if buy_probability >= buy_threshold:
+                signal = "buy"
+            elif sell_probability >= sell_threshold:
+                signal = "sell"
+            else:
+                signal = "no trade"
+
             logger.info(f"Predicted signal: {signal}")
+            logger.info(f"Buy probability: {buy_probability:.4f}, Sell probability: {sell_probability:.4f}")
+            logger.info(f"Buy threshold: {buy_threshold:.2f}, Sell threshold: {sell_threshold:.2f}")
+
+            # Log additional feature information
+            feature_importance = self.model.feature_importances_
+            feature_names = X.columns
+            for name, importance in zip(feature_names, feature_importance):
+                logger.info(f"Feature {name}: importance = {importance:.4f}, value = {X.iloc[-1][name]}")
+
             return signal
+
         except Exception as e:
             logger.error(f"Error during prediction: {e}")
             return "no signal"
