@@ -38,7 +38,7 @@ if __name__ == "__main__":
     historical_data = []  # Create a list to hold historical data for all symbols
 
     for symbol in symbols:
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, 0, 1000)
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1000)
         if rates is None or len(rates) == 0:
             logger.error(f"No data returned for symbol {symbol}.")
             continue
@@ -107,7 +107,7 @@ if __name__ == "__main__":
         while True:
             trade_manager.monitor_trade()
             for symbol in symbols:
-                rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, 0, 1000)
+                rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1000)
                 if rates is None or len(rates) == 0:
                     logger.error(f"No data returned for symbol {symbol}. Skipping.")
                     continue

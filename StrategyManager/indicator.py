@@ -7,6 +7,51 @@ from sklearn.metrics import accuracy_score
 import ta
 from logger.logger import logger
 
+class Supertrend:
+    def __init__(self, df, period=7, multiplier=3):
+        self.df = df
+        self.period = period
+        self.multiplier = multiplier
+
+    def calculate_atr(self):
+        """Calculate the Average True Range (ATR)"""
+        high_low = self.df['high'] - self.df['low']
+        high_close = (self.df['high'] - self.df['close'].shift()).abs()
+        low_close = (self.df['low'] - self.df['close'].shift()).abs()
+
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+
+        atr = true_range.rolling(self.period).mean()
+        return atr
+
+    def calculate_supertrend(self):
+        """Calculate the Supertrend indicator"""
+        hl2 = (self.df['high'] + self.df['low']) / 2
+        atr = self.calculate_atr()
+
+        upper_band = hl2 + (self.multiplier * atr)
+        lower_band = hl2 - (self.multiplier * atr)
+
+        supertrend = pd.Series(data=np.nan, index=self.df.index)
+        direction = pd.Series(data=np.nan, index=self.df.index)
+
+        for i in range(1, len(self.df)):
+            if self.df['close'].iloc[i] > upper_band.iloc[i-1]:
+                supertrend.iloc[i] = lower_band.iloc[i]
+                direction.iloc[i] = 1  # Buy signal
+            elif self.df['close'].iloc[i] < lower_band.iloc[i-1]:
+                supertrend.iloc[i] = upper_band.iloc[i]
+                direction.iloc[i] = -1  # Sell signal
+            else:
+                supertrend.iloc[i] = supertrend.iloc[i-1]
+                direction.iloc[i] = direction.iloc[i-1]
+
+        self.df['supertrend'] = supertrend
+        self.df['supertrend_direction'] = direction
+        return self.df
+    
+
 class IndicatorCalculator:
     """Calculates both traditional and price action/SMC indicators for trading signals.""" 
     
@@ -17,6 +62,11 @@ class IndicatorCalculator:
         df['ema'] = ta.trend.EMAIndicator(df['close'], window=14).ema_indicator()
         df['adx'] = ta.trend.ADXIndicator(df['high'], df['low'], df['close']).adx()
         df['macd'] = ta.trend.MACD(df['close']).macd()
+
+        # Add Supertrend Indicator
+        supertrend_calculator = Supertrend(df)
+        df = supertrend_calculator.calculate_supertrend()
+
         df.dropna(inplace=True)  # Drop rows with NaN values (created due to indicators)
         return df
 
@@ -63,7 +113,7 @@ class MLIndicatorCalculator(IndicatorCalculator):
             logger.error("Not enough data to calculate features.")
             raise ValueError("Not enough data to calculate features.")
 
-        # Calculate traditional indicators
+        # Calculate traditional indicators (including SuperTrend)
         df = self.calculate_traditional_indicators(df)
         
         # Detect price action/SMC indicators
@@ -82,6 +132,8 @@ class MLIndicatorCalculator(IndicatorCalculator):
             'ema': df['ema'],
             'adx': df['adx'],
             'macd': df['macd'],
+            'supertrend': df['supertrend'],
+            'supertrend_direction': df['supertrend_direction']
         })
 
         csv_filename = "features.csv"
@@ -104,7 +156,7 @@ class MLIndicatorCalculator(IndicatorCalculator):
         features['target'] = (target_series.shift(-1) > target_series).astype(int)
 
         return features.drop('target', axis=1), features['target']
-
+    
     def train_model(self, df):
         X, y = self.prepare_combined_features(df)
         X_scaled = self.scaler.fit_transform(X)
