@@ -1,58 +1,110 @@
 import pandas as pd
 import numpy as np
-from xgboost import XGBClassifier
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
 import ta
+from scipy.stats import randint, uniform
 from logger.logger import logger
 
-class IndicatorCalculator:
-    """Calculates both traditional and price action/SMC indicators for Forex trading signals.""" 
+class Supertrend:
+    def __init__(self, df, period=7, multiplier=3):
+        self.df = df
+        self.period = period
+        self.multiplier = multiplier
 
+    def calculate_atr(self):
+        """Calculate the Average True Range (ATR)"""
+        high_low = self.df['high'] - self.df['low']
+        high_close = (self.df['high'] - self.df['close'].shift()).abs()
+        low_close = (self.df['low'] - self.df['close'].shift()).abs()
+
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+
+        atr = true_range.rolling(self.period).mean()
+        return atr
+
+    def calculate_supertrend(self):
+        """Calculate the Supertrend indicator"""
+        hl2 = (self.df['high'] + self.df['low']) / 2
+        atr = self.calculate_atr()
+
+        upper_band = hl2 + (self.multiplier * atr)
+        lower_band = hl2 - (self.multiplier * atr)
+
+        supertrend = pd.Series(data=np.nan, index=self.df.index)
+        direction = pd.Series(data=np.nan, index=self.df.index)
+
+        for i in range(1, len(self.df)):
+            if self.df['close'].iloc[i] > upper_band.iloc[i-1]:
+                supertrend.iloc[i] = lower_band.iloc[i]
+                direction.iloc[i] = 1  # Buy signal
+            elif self.df['close'].iloc[i] < lower_band.iloc[i-1]:
+                supertrend.iloc[i] = upper_band.iloc[i]
+                direction.iloc[i] = -1  # Sell signal
+            else:
+                supertrend.iloc[i] = supertrend.iloc[i-1]
+                direction.iloc[i] = direction.iloc[i-1]
+
+        self.df['supertrend'] = supertrend
+        self.df['supertrend_direction'] = direction
+        return self.df
+
+class IndicatorCalculator:
+    """Calculates both traditional and price action/SMC indicators for trading signals.""" 
+    
     def calculate_traditional_indicators(self, df):
         # Add technical indicators to the DataFrame using the ta library
-        df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()  # Forex may need smaller window sizes
-        df['sma'] = ta.trend.SMAIndicator(df['close'], window=50).sma_indicator()  # Longer SMA for Forex
-        df['ema'] = ta.trend.EMAIndicator(df['close'], window=21).ema_indicator()  # EMA for faster reaction
-        df['adx'] = ta.trend.ADXIndicator(df['high'], df['low'], df['close'], window=14).adx()  # ADX for trend strength
+        df['rsi'] = ta.momentum.RSIIndicator(df['close']).rsi()
+        df['sma'] = ta.trend.SMAIndicator(df['close'], window=14).sma_indicator()
+        df['ema'] = ta.trend.EMAIndicator(df['close'], window=14).ema_indicator()
+        df['adx'] = ta.trend.ADXIndicator(df['high'], df['low'], df['close']).adx()
         df['macd'] = ta.trend.MACD(df['close']).macd()
-        df['atr'] = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()  # ATR for volatility
+
+        # Add Supertrend Indicator
+        supertrend_calculator = Supertrend(df)
+        df = supertrend_calculator.calculate_supertrend()
+
         df.dropna(inplace=True)  # Drop rows with NaN values (created due to indicators)
         return df
 
-    def detect_swing_highs(self, high, lookback=3):
-        # Detect swing highs: adapted for Forex, lower lookback to capture quick market swings
+    def detect_swing_highs(self, high, lookback=5):
+        # Detect swing highs: if the high is greater than the previous `lookback` periods
         swing_highs = np.zeros(len(high))
 
+        # Ensure that lookback is within bounds
         for i in range(lookback, len(high) - lookback):
+            # Use iloc for integer-based indexing
             if (high.iloc[i] > high.iloc[i - lookback:i].max() and
                 high.iloc[i] > high.iloc[i + 1:i + lookback + 1].max()):
                 swing_highs[i] = 1
 
         return pd.Series(swing_highs, index=high.index)
 
-    def detect_swing_lows(self, low, lookback=3):
-        # Detect swing lows: adapted for Forex, lower lookback to capture quick market swings
+    def detect_swing_lows(self, low, lookback=5):
+        # Detect swing lows: if the low is lower than the previous `lookback` periods
         swing_lows = np.zeros(len(low))
 
+        # Ensure that lookback is within bounds
         for i in range(lookback, len(low) - lookback):
+            # Use iloc for integer-based indexing
             if (low.iloc[i] < low.iloc[i - lookback:i].min() and
                 low.iloc[i] < low.iloc[i + 1:i + lookback + 1].min()):
                 swing_lows[i] = 1
 
         return pd.Series(swing_lows, index=low.index)
 
-    def detect_support_resistance(self, close_prices, window=20):
-        # For Forex, use a slightly larger window to detect support and resistance zones
+    def detect_support_resistance(self, close_prices, window=10):
+        # Calculate basic support/resistance zones by looking for price clusters
         support = pd.Series(close_prices).rolling(window).min()
         resistance = pd.Series(close_prices).rolling(window).max()
         return support, resistance
 
 class MLIndicatorCalculator(IndicatorCalculator):
     def __init__(self):
-        # Initialize XGBoost Classifier
-        self.model = XGBClassifier(random_state=42, use_label_encoder=False, eval_metric='logloss')
+        self.model = RandomForestClassifier(random_state=42)
         self.scaler = StandardScaler()
         self.is_model_trained = False
 
@@ -61,7 +113,7 @@ class MLIndicatorCalculator(IndicatorCalculator):
             logger.error("Not enough data to calculate features.")
             raise ValueError("Not enough data to calculate features.")
 
-        # Calculate traditional indicators
+        # Calculate traditional indicators (including SuperTrend)
         df = self.calculate_traditional_indicators(df)
         
         # Detect price action/SMC indicators
@@ -80,10 +132,11 @@ class MLIndicatorCalculator(IndicatorCalculator):
             'ema': df['ema'],
             'adx': df['adx'],
             'macd': df['macd'],
-            'atr': df['atr'],  # Include ATR for volatility measurement
+            'supertrend': df['supertrend'],
+            'supertrend_direction': df['supertrend_direction']
         })
 
-        csv_filename = "features_forex.csv"
+        csv_filename = "features.csv"
         features.to_csv(csv_filename, index=False)
         logger.info(f"Features exported to {csv_filename}")
 
@@ -95,7 +148,7 @@ class MLIndicatorCalculator(IndicatorCalculator):
         if len(features) == 0:
             logger.error("No valid features after dropping NaNs.")
             raise ValueError("No valid features after dropping NaNs.")
-    
+
         # Align the indices of df['close'] and features to create target labels
         target_series = df['close'].iloc[len(df) - len(features):]  # Get the last `len(features)` entries
 
@@ -103,25 +156,37 @@ class MLIndicatorCalculator(IndicatorCalculator):
         features['target'] = (target_series.shift(-1) > target_series).astype(int)
 
         return features.drop('target', axis=1), features['target']
-
+    
     def train_model(self, df):
         X, y = self.prepare_combined_features(df)
         X_scaled = self.scaler.fit_transform(X)
 
-        # Define parameter grid for GridSearchCV
-        param_grid = {
-            'n_estimators': [100, 200],
-            'max_depth': [3, 6, 10],
-            'learning_rate': [0.01, 0.05, 0.1],
-            'subsample': [0.8, 1.0],
-            'colsample_bytree': [0.8, 1.0]
+        # Define parameter distributions for RandomizedSearchCV
+        param_distributions = {
+            'n_estimators': randint(100, 500),
+            'max_depth': randint(10, 110),
+            'min_samples_split': randint(2, 21),
+            'min_samples_leaf': randint(1, 11),
+            'max_features': uniform(0.1, 0.9),
+            'bootstrap': [True, False]
         }
 
-        grid_search = GridSearchCV(self.model, param_grid, cv=5, scoring='accuracy', n_jobs=1, verbose=2)
-        grid_search.fit(X_scaled, y)
+        # Use RandomizedSearchCV instead of GridSearchCV
+        random_search = RandomizedSearchCV(
+            self.model, 
+            param_distributions, 
+            n_iter=100,  # Number of parameter settings that are sampled
+            cv=5, 
+            scoring='accuracy', 
+            n_jobs=1,
+            verbose=2, 
+            random_state=42
+        )
+        random_search.fit(X_scaled, y)
 
-        self.model = grid_search.best_estimator_
-        logger.info(f"Best Parameters: {grid_search.best_params_}")
+        # Use the best estimator from the Random Search
+        self.model = random_search.best_estimator_
+        logger.info(f"Best Parameters: {random_search.best_params_}")
 
         # Evaluate on a test split to confirm performance
         X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
@@ -150,11 +215,13 @@ class MLIndicatorCalculator(IndicatorCalculator):
                 logger.info("No predictions made.")
                 return "no signal"
 
+            # Get the probability of the positive class (buy) and negative class (sell)
             buy_probability = probabilities[-1, 1]
             sell_probability = probabilities[-1, 0]
 
-            buy_threshold = 0.80
-            sell_threshold = 0.80
+            # Set the confidence threshold for buy and sell
+            buy_threshold = 0.80  # 80% confidence for a buy signal
+            sell_threshold = 0.80  # 80% confidence for a sell signal
 
             if buy_probability >= buy_threshold:
                 signal = "buy"

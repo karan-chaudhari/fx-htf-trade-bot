@@ -107,7 +107,7 @@ class TradeManager:
                 # Close the trade if profit target is met
                 # if current_profit >= profit_target:
                 # Close the trade if profit target is met (>= 10) or loss threshold is hit (<= -100)
-                if position.profit >= 100.0:
+                if position.profit >= 0.5:
                     logger.info(f"Profit target reached on {position.symbol}! Closing trade.")
                     self.close_order(position.ticket, position.symbol, position.volume)
                 # elif position.profit <= -100.0:

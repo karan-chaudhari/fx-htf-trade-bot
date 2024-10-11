@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from xgboost import XGBClassifier
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
@@ -51,8 +51,7 @@ class IndicatorCalculator:
 
 class MLIndicatorCalculator(IndicatorCalculator):
     def __init__(self):
-        # Initialize XGBoost Classifier
-        self.model = XGBClassifier(random_state=42, use_label_encoder=False, eval_metric='logloss')
+        self.model = RandomForestClassifier(random_state=42)
         self.scaler = StandardScaler()
         self.is_model_trained = False
 
@@ -110,11 +109,12 @@ class MLIndicatorCalculator(IndicatorCalculator):
 
         # Define parameter grid for GridSearchCV
         param_grid = {
-            'n_estimators': [100, 200],
-            'max_depth': [3, 6, 10],
-            'learning_rate': [0.01, 0.05, 0.1],
-            'subsample': [0.8, 1.0],
-            'colsample_bytree': [0.8, 1.0]
+            'n_estimators': [100, 200, 300],
+            'n_estimators': [100, 200, 300],
+            'max_depth': [None, 10, 20],
+            'min_samples_split': [2, 5, 10],
+            'min_samples_leaf': [1, 2, 4],
+            'bootstrap': [True, False]
         }
 
         grid_search = GridSearchCV(self.model, param_grid, cv=5, scoring='accuracy', n_jobs=1, verbose=2)
