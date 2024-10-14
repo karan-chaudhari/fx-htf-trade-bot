@@ -6,6 +6,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
 import ta
 from logger.logger import logger
+import joblib  # Import joblib for model persistence
+import os
 
 class IndicatorCalculator:
     """Calculates both traditional and price action/SMC indicators for Forex trading signals.""" 
@@ -50,11 +52,42 @@ class IndicatorCalculator:
         return support, resistance
 
 class MLIndicatorCalculator(IndicatorCalculator):
-    def __init__(self):
+    def __init__(self, symbol_name):
+        # Initialize file paths for the model and scaler
+        self.model_path = f"model/{symbol_name}_model.pkl"
+        self.scaler_path = f"model/{symbol_name}_scaler.pkl"
+        self.symbol_name = symbol_name
+        
         # Initialize XGBoost Classifier
         self.model = XGBClassifier(random_state=42, use_label_encoder=False, eval_metric='logloss')
         self.scaler = StandardScaler()
         self.is_model_trained = False
+
+        # Attempt to load existing model and scaler
+        self.load_model()
+
+    def save_model(self):
+        """Saves the trained model, scaler, and symbol name to disk."""
+        try:
+            joblib.dump({'model': self.model, 'scaler': self.scaler}, self.model_path)
+            logger.info(f"Model, scaler, and symbol '{self.symbol_name}' saved to {self.model_path}.")
+        except Exception as e:
+            logger.error(f"Failed to save model, scaler, and symbol: {e}")
+
+    def load_model(self):
+        """Loads the trained model, scaler, and symbol name from disk if they exist."""
+        if os.path.exists(self.model_path):
+            try:
+                saved_objects = joblib.load(self.model_path)
+                self.model = saved_objects['model']
+                self.scaler = saved_objects['scaler']
+                self.is_model_trained = True  # Assume model is trained if loaded successfully
+                logger.info(f"Loaded model, scaler, and symbol '{self.symbol_name}' from {self.model_path}.")
+            except Exception as e:
+                logger.error(f"Failed to load model, scaler, and symbol: {e}")
+                self.is_model_trained = False
+        else:
+            logger.info("No existing model found. A new model will be trained.")
 
     def prepare_combined_features(self, df):
         if len(df) < 200:
@@ -83,14 +116,14 @@ class MLIndicatorCalculator(IndicatorCalculator):
             'atr': df['atr'],  # Include ATR for volatility measurement
         })
 
-        csv_filename = "features_forex.csv"
-        features.to_csv(csv_filename, index=False)
-        logger.info(f"Features exported to {csv_filename}")
+        # csv_filename = "features_forex.csv"
+        # features.to_csv(csv_filename, index=False)
+        # logger.info(f"Features exported to {csv_filename}")
 
         # Drop NaN values
         features.dropna(inplace=True)
 
-        logger.info(f"Features data length after dropping NaN: {len(features)}")
+        logger.info(f"Symbol: {self.symbol_name}, Features data length after dropping NaN: {len(features)}")
 
         if len(features) == 0:
             logger.error("No valid features after dropping NaNs.")
@@ -105,6 +138,10 @@ class MLIndicatorCalculator(IndicatorCalculator):
         return features.drop('target', axis=1), features['target']
 
     def train_model(self, df):
+        if self.is_model_trained:
+            logger.info("Model is already trained. Loading existing model.")
+            return
+
         X, y = self.prepare_combined_features(df)
         X_scaled = self.scaler.fit_transform(X)
 
@@ -118,6 +155,15 @@ class MLIndicatorCalculator(IndicatorCalculator):
         }
 
         grid_search = GridSearchCV(self.model, param_grid, cv=5, scoring='accuracy', n_jobs=1, verbose=2)
+        # grid_search = GridSearchCV(
+        #     estimator=XGBClassifier(random_state=42, eval_metric='logloss'),
+        #     param_grid=param_grid,
+        #     cv=10,  # 10-Fold Cross-Validation
+        #     scoring='accuracy',
+        #     verbose=2,
+        #     n_jobs=1  # Utilize all processors for faster training
+        # )
+        
         grid_search.fit(X_scaled, y)
 
         self.model = grid_search.best_estimator_
@@ -129,16 +175,17 @@ class MLIndicatorCalculator(IndicatorCalculator):
         accuracy = accuracy_score(y_test, y_pred) * 100
         logger.info(f"Model trained with accuracy: {accuracy:.2f}%")
 
-        if accuracy >= 60:
+        if accuracy >= 50:
             self.is_model_trained = True
-            logger.info("Model accuracy is above 60%, trades are allowed.")
+            logger.info("Model accuracy is above 50%, trades are allowed.")
+            self.save_model()  # Save the trained model and scaler
         else:
             self.is_model_trained = False
-            logger.info("Model accuracy is below 60%, no trades will be allowed.")
+            logger.info("Model accuracy is below 50%, no trades will be allowed.")
 
     def predict_signal(self, df):
         if not self.is_model_trained:
-            logger.info("Model not trained or accuracy below 60%, no trades allowed.")
+            logger.info("Model not trained or accuracy below 50%, no trades allowed.")
             return "trade not allowed"
 
         try:
@@ -163,15 +210,15 @@ class MLIndicatorCalculator(IndicatorCalculator):
             else:
                 signal = "no trade"
 
-            logger.info(f"Predicted signal: {signal}")
-            logger.info(f"Buy probability: {buy_probability:.4f}, Sell probability: {sell_probability:.4f}")
-            logger.info(f"Buy threshold: {buy_threshold:.2f}, Sell threshold: {sell_threshold:.2f}")
+            logger.info(f"Symbol: {self.symbol_name}, Predicted signal: {signal}")
+            logger.info(f"Symbol: {self.symbol_name}, Buy probability: {buy_probability:.4f}, Sell probability: {sell_probability:.4f}")
+            logger.info(f"Symbol: {self.symbol_name}, Buy threshold: {buy_threshold:.2f}, Sell threshold: {sell_threshold:.2f}")
 
             # Log additional feature information
             feature_importance = self.model.feature_importances_
             feature_names = X.columns
             for name, importance in zip(feature_names, feature_importance):
-                logger.info(f"Feature {name}: importance = {importance:.4f}, value = {X.iloc[-1][name]}")
+                logger.info(f"Symbol: {self.symbol_name}, Feature {name}: importance = {importance:.4f}, value = {X.iloc[-1][name]}")
 
             return signal
 
