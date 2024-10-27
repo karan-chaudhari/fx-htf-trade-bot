@@ -2,12 +2,13 @@ import time
 import os
 import MetaTrader5 as mt5
 import numpy as np
-import pandas as pd  # Make sure to import pandas
+import pandas as pd
 import traceback
 from dotenv import load_dotenv
 from MT5Connector.mt5_connector import MT5Connector
 from StrategyManager.indicator import MLIndicatorCalculator
 from TradeManager.trade_manager import TradeManager
+from datetime import datetime, timedelta
 from logger.logger import logger
 
 # Load environment variables from .env file
@@ -31,14 +32,24 @@ if __name__ == "__main__":
     volume = float(os.getenv('TRADE_VOL'))
     trade_manager = TradeManager(volume)
 
-    # Initialize the ML-based Indicator Calculator
-    indicator_calculator = MLIndicatorCalculator()
+    # Store MLIndicatorCalculator instances for each symbol
+    indicator_calculators = {}
 
-    # Collect historical close, low, high, and open prices for each symbol
-    historical_data = []  # Create a list to hold historical data for all symbols
+    historical_data = []  # Collect historical data for all symbols
 
     for symbol in symbols:
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1000)
+        end_time = datetime.now()
+        start_time = end_time - timedelta(days=30)
+
+        # Initialize the ML-based Indicator Calculator
+        indicator_calculator = MLIndicatorCalculator(symbol_name=symbol)
+        indicator_calculators[symbol] = indicator_calculator  # Store the instance
+
+        # Fetch data for the last one month
+        # rates = mt5.copy_rates_range(symbol, mt5.TIMEFRAME_M2, start_time, end_time)
+
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M2, 0, 1000)
+
         if rates is None or len(rates) == 0:
             logger.error(f"No data returned for symbol {symbol}.")
             continue
@@ -46,15 +57,15 @@ if __name__ == "__main__":
         close_prices = np.array([rate['close'] for rate in rates])
         low_prices = np.array([rate['low'] for rate in rates])
         high_prices = np.array([rate['high'] for rate in rates])
-        open_prices = np.array([rate['open'] for rate in rates])  # Retrieve open prices
+        open_prices = np.array([rate['open'] for rate in rates])
 
-        if len(close_prices) < 50 or len(low_prices) < 50 or len(high_prices) < 50 or len(open_prices) < 50:  # Minimum length for indicators
-            logger.error(f"Not enough data for symbol {symbol}. Found close: {len(close_prices)}, low: {len(low_prices)}, high: {len(high_prices)}, open: {len(open_prices)}")
+        if len(close_prices) < 50:
+            logger.error(f"Not enough data for symbol {symbol}. Found close: {len(close_prices)}")
             continue
 
         # Append the data to the historical_data list as a DataFrame
         symbol_data = pd.DataFrame({
-            'open': open_prices,   # Add open prices
+            'open': open_prices,
             'close': close_prices,
             'low': low_prices,
             'high': high_prices,
@@ -80,24 +91,29 @@ if __name__ == "__main__":
             exit(1)
 
         # Check for required columns
-        required_columns = ['open', 'high', 'low', 'close']  # Add 'open' to the required columns
+        required_columns = ['open', 'high', 'low', 'close']
         if not all(col in combined_df.columns for col in required_columns):
             logger.error("Combined DataFrame is missing required columns: open, high, low, close.")
             exit(1)
 
         logger.info(f"Training model with {len(combined_df)} data points.")
         logger.info(f"Combined DataFrame shape: {combined_df.shape}")
-        logger.info(combined_df.head())  # Debugging: show the first few rows of the DataFrame
-        
-        # Train the model using the combined dataframe
-        try:
-            indicator_calculator.train_model(combined_df)
-            logger.info("Model training completed successfully.")
-        except MemoryError:
-            logger.error("MemoryError: Not enough memory available for model training.")
-        except Exception as e:
-            logger.error(f"Unexpected error during model training: {e}")
-            logger.error(traceback.format_exc())  # Capture and log the full traceback
+        logger.info(combined_df.head())
+
+        # Train the model for each symbol
+        for symbol, calculator in indicator_calculators.items():
+            try:
+                if not calculator.is_model_trained:
+                    logger.info(f"Training the model for {symbol}.")
+                    calculator.train_model(combined_df)  # Pass symbol-specific data if needed
+                    calculator.save_model()
+                else:
+                    logger.info(f"Using the pre-trained model for {symbol}.")
+            except MemoryError:
+                logger.error("MemoryError: Not enough memory available for model training.")
+            except Exception as e:
+                logger.error(f"Unexpected error during model training for {symbol}: {e}")
+                logger.error(traceback.format_exc())
 
     except Exception as e:
         logger.error(f"Error during model training: {e}")
@@ -107,34 +123,33 @@ if __name__ == "__main__":
         while True:
             trade_manager.monitor_trade()
             for symbol in symbols:
-                rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1000)
+                rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M2, 0, 1000)
                 if rates is None or len(rates) == 0:
                     logger.error(f"No data returned for symbol {symbol}. Skipping.")
                     continue
 
                 close_prices = np.array([rate['close'] for rate in rates])
-                low_prices = np.array([rate['low'] for rate in rates])  # Collect low prices for prediction
+                low_prices = np.array([rate['low'] for rate in rates])
                 high_prices = np.array([rate['high'] for rate in rates])
-                open_prices = np.array([rate['open'] for rate in rates])  # Collect open prices for prediction
+                open_prices = np.array([rate['open'] for rate in rates])
 
-                if len(close_prices) < 50 or len(low_prices) < 50:  # Check for sufficient data for prediction
+                if len(close_prices) < 50:
                     logger.error(f"Not enough close prices for symbol {symbol}. Skipping.")
                     continue
 
                 # Create a DataFrame for prediction
                 prediction_df = pd.DataFrame({
-                    'open': open_prices,   # Add open prices
+                    'open': open_prices,
                     'close': close_prices,
                     'low': low_prices,
                     'high': high_prices
                 })
 
-                # Make predictions
+                # Make predictions using the respective indicator calculator
                 try:
-                    # Ensure prediction_df indices are reset for alignment
                     prediction_df.reset_index(drop=True, inplace=True)
 
-                    signal = indicator_calculator.predict_signal(prediction_df)
+                    signal = indicator_calculators[symbol].predict_signal(prediction_df)
                     if signal == "buy":
                         trade_manager.place_order(symbol, "buy")
                         logger.info(f"Placed buy order for {symbol}.")
@@ -144,7 +159,7 @@ if __name__ == "__main__":
                 except Exception as e:
                     logger.error(f"Error during prediction for {symbol}: {e}")
 
-            time.sleep(10)
+            # time.sleep(1)
             logger.info("Checking for next trade")
 
     except KeyboardInterrupt:
