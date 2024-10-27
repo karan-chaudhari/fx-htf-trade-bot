@@ -46,9 +46,9 @@ if __name__ == "__main__":
         indicator_calculators[symbol] = indicator_calculator  # Store the instance
 
         # Fetch data for the last one month
-        # rates = mt5.copy_rates_range(symbol, mt5.TIMEFRAME_M1, start_time, end_time)
+        # rates = mt5.copy_rates_range(symbol, mt5.TIMEFRAME_M2, start_time, end_time)
 
-        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1000)
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M2, 0, 1000)
 
         if rates is None or len(rates) == 0:
             logger.error(f"No data returned for symbol {symbol}.")
@@ -123,7 +123,7 @@ if __name__ == "__main__":
         while True:
             trade_manager.monitor_trade()
             for symbol in symbols:
-                rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1000)
+                rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M2, 0, 1000)
                 if rates is None or len(rates) == 0:
                     logger.error(f"No data returned for symbol {symbol}. Skipping.")
                     continue
@@ -159,7 +159,7 @@ if __name__ == "__main__":
                 except Exception as e:
                     logger.error(f"Error during prediction for {symbol}: {e}")
 
-            time.sleep(10)
+            # time.sleep(1)
             logger.info("Checking for next trade")
 
     except KeyboardInterrupt:
