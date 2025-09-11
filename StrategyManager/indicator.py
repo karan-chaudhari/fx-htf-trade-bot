@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from xgboost import XGBClassifier
 from sklearn.ensemble import RandomForestClassifier
+from lightgbm import LGBMClassifier
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
@@ -136,6 +137,7 @@ class MLIndicatorCalculator(IndicatorCalculator):
         self.feature_hash_path = os.path.join(self.model_dir, f"{symbol_name}_featurehash.txt")
         self.xgb_model = XGBClassifier(random_state=42, use_label_encoder=False, eval_metric='logloss')
         self.rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+        self.lgbm_model = LGBMClassifier(n_estimators=100, random_state=42)
         self.scaler = StandardScaler()
         self.is_model_trained = False
         self.feature_names = None
@@ -144,12 +146,12 @@ class MLIndicatorCalculator(IndicatorCalculator):
     def save_model(self):
         """Saves the trained ensemble models, scaler, and feature hash to disk."""
         try:
-            joblib.dump({'xgb_model': self.xgb_model, 'rf_model': self.rf_model, 'scaler': self.scaler}, self.model_path)
+            joblib.dump({'xgb_model': self.xgb_model, 'rf_model': self.rf_model, 'lgbm_model': self.lgbm_model, 'scaler': self.scaler}, self.model_path)
             # Save feature hash for auto-cleanup
             if self.feature_names:
                 with open(self.feature_hash_path, 'w') as f:
                     f.write(get_feature_hash(self.feature_names))
-            logger.info(f"Ensemble models, scaler, and symbol '{self.symbol_name}' saved to {self.model_path}.")
+            logger.info(f"Ensemble models (XGB, RF, LGBM), scaler, and symbol '{self.symbol_name}' saved to {self.model_path}.")
         except Exception as e:
             logger.error(f"Failed to save ensemble models, scaler, and symbol: {e}")
 
@@ -160,6 +162,7 @@ class MLIndicatorCalculator(IndicatorCalculator):
                 saved_objects = joblib.load(self.model_path)
                 self.xgb_model = saved_objects['xgb_model']
                 self.rf_model = saved_objects['rf_model']
+                self.lgbm_model = saved_objects['lgbm_model']
                 self.scaler = saved_objects['scaler']
                 # Check feature hash
                 if os.path.exists(self.feature_hash_path):
@@ -170,7 +173,7 @@ class MLIndicatorCalculator(IndicatorCalculator):
                 else:
                     self.saved_feature_hash = None
                 self.is_model_trained = True
-                logger.info(f"Loaded ensemble models, scaler, and symbol '{self.symbol_name}' from {self.model_path}.")
+                logger.info(f"Loaded ensemble models (XGB, RF, LGBM), scaler, and symbol '{self.symbol_name}' from {self.model_path}.")
             except Exception as e:
                 logger.error(f"Failed to load ensemble models, scaler, and symbol: {e}")
                 self.is_model_trained = False
@@ -296,8 +299,9 @@ class MLIndicatorCalculator(IndicatorCalculator):
         self.xgb_model = grid_search_selected.best_estimator_
         logger.info(f"Best XGBoost Parameters: {grid_search_selected.best_params_}")
 
-        # Train RandomForest on selected features
+        # Train RandomForest and LightGBM on selected features
         self.rf_model.fit(X_selected, y)
+        self.lgbm_model.fit(X_selected, y)
 
         # Evaluate ensemble on the last split
         for train_idx, test_idx in tscv.split(X_selected):
@@ -305,11 +309,12 @@ class MLIndicatorCalculator(IndicatorCalculator):
             y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
         xgb_pred = self.xgb_model.predict(X_test)
         rf_pred = self.rf_model.predict(X_test)
+        lgbm_pred = self.lgbm_model.predict(X_test)
         # Majority vote
         import scipy.stats
-        ensemble_pred = scipy.stats.mode([xgb_pred, rf_pred], axis=0)[0][0]
+        ensemble_pred = scipy.stats.mode([xgb_pred, rf_pred, lgbm_pred], axis=0)[0][0]
         accuracy = accuracy_score(y_test, ensemble_pred) * 100
-        logger.info(f"Ensemble model trained with accuracy (last split): {accuracy:.2f}%")
+        logger.info(f"Ensemble model (XGB, RF, LGBM) trained with accuracy (last split): {accuracy:.2f}%")
 
         if accuracy >= 50:
             self.is_model_trained = True
@@ -335,7 +340,8 @@ class MLIndicatorCalculator(IndicatorCalculator):
             # Ensemble prediction: average probabilities and majority vote
             xgb_probs = self.xgb_model.predict_proba(X_selected)
             rf_probs = self.rf_model.predict_proba(X_selected)
-            avg_probs = (xgb_probs + rf_probs) / 2
+            lgbm_probs = self.lgbm_model.predict_proba(X_selected)
+            avg_probs = (xgb_probs + rf_probs + lgbm_probs) / 3
 
             if len(avg_probs) == 0:
                 logger.info("No predictions made.")
