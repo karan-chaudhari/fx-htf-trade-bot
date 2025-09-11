@@ -1,28 +1,54 @@
 import MetaTrader5 as mt5
 import os
 from logger.logger import logger
+import yaml
 
+
+def load_config():
+    with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.yaml'), 'r') as f:
+        return yaml.safe_load(f)
+
+config = load_config()
 
 class TradeManager:
-    """Manages trading operations like placing and closing orders."""
+    """Manages trading operations like placing and closing orders, with ATR-based risk management."""
 
     def __init__(self, volume):
         self.volume = volume
+        self.atr_stoploss_mult = config.get('ATR_STOPLOSS_MULTIPLIER', 1.5)
+        self.atr_takeprofit_mult = config.get('ATR_TAKEPROFIT_MULTIPLIER', 2.0)
+        self.trade_start_hour = config.get('TRADE_START_HOUR', 6)
+        self.trade_end_hour = config.get('TRADE_END_HOUR', 20)
 
     def can_open_position(self, symbol):
-        """Check if there are fewer than 2 open positions for the symbol."""
+        """Check if there are fewer than allowed open positions for the symbol."""
         positions = mt5.positions_get(symbol=symbol)
+        max_pos = int(os.getenv('NO_OF_POS', 2))
         if positions is None:
             return True  # No positions open
-        return len(positions) < int(os.getenv('NO_OF_POS'))
+        return len(positions) < max_pos
 
-    def place_order(self, symbol, action):
+    def place_order(self, symbol, action, atr=None):
+        import datetime
+        now_utc = datetime.datetime.utcnow().hour
+        if not (self.trade_start_hour <= now_utc < self.trade_end_hour):
+            logger.info(f"Trading not allowed at this hour: {now_utc} UTC. Allowed: {self.trade_start_hour}-{self.trade_end_hour}")
+            return
+
         if not self.can_open_position(symbol):
-            logger.info(f"Cannot open more than {int(os.getenv('NO_OF_POS'))} positions for {symbol}.")
+            logger.info(f"Cannot open more than allowed positions for {symbol}.")
             return
 
         order_type = mt5.ORDER_TYPE_BUY if action == "buy" else mt5.ORDER_TYPE_SELL
         price = mt5.symbol_info_tick(symbol).ask if action == "buy" else mt5.symbol_info_tick(symbol).bid
+
+        # ATR-based stop-loss/take-profit
+        if atr is not None:
+            stop_loss = price - self.atr_stoploss_mult * atr if action == "buy" else price + self.atr_stoploss_mult * atr
+            take_profit = price + self.atr_takeprofit_mult * atr if action == "buy" else price - self.atr_takeprofit_mult * atr
+        else:
+            stop_loss = 0
+            take_profit = 0
 
         order_request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -35,13 +61,18 @@ class TradeManager:
             "comment": "Auto-trade",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
+            "sl": stop_loss,
+            "tp": take_profit,
         }
 
-        result = mt5.order_send(order_request)
-        if result.retcode != mt5.TRADE_RETCODE_DONE:
-            logger.error(f"Failed to place order for {symbol}: {result.retcode}")
-        else:
-            logger.info(f"Order placed successfully for {symbol}")
+        try:
+            result = mt5.order_send(order_request)
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                logger.error(f"Failed to place order for {symbol}: {result.retcode} - {result.comment}")
+            else:
+                logger.info(f"Order placed successfully for {symbol} at {price} with SL {stop_loss} and TP {take_profit}")
+        except Exception as e:
+            logger.error(f"Exception in placing order: {e}")
 
     # Function to close an open position
     def close_order(self, position_id, symbol, volume):
@@ -104,15 +135,15 @@ class TradeManager:
         if positions:
             for position in positions:
                 logger.info(f"Position {position.ticket}: {position.type} - Volume: {position.volume} - Profit: {position.profit}")
-                # Close the trade if profit target is met
-                # if current_profit >= profit_target:
-                # Close the trade if profit target is met (>= 10) or loss threshold is hit (<= -100)
-                if position.profit >= 0.1:
+                # ATR-based dynamic close logic (optional)
+                # Example: close if profit > 2*ATR or loss < -1.5*ATR
+                # You can fetch ATR from your indicator logic and pass it here
+                if position.profit >= self.atr_takeprofit_mult:
                     logger.info(f"Profit target reached on {position.symbol}! Closing trade.")
                     self.close_order(position.ticket, position.symbol, position.volume)
-                # elif position.profit <= -1:
-                #     logger.info(f"Loss threshold reached on {position.symbol}! Closing trade.")
-                #     self.close_order(position.ticket, position.symbol, position.volume)
+                elif position.profit <= -self.atr_stoploss_mult:
+                    logger.info(f"Loss threshold reached on {position.symbol}! Closing trade.")
+                    self.close_order(position.ticket, position.symbol, position.volume)
         else:
             logger.info(f"No open positions.")
 

@@ -10,26 +10,40 @@ from StrategyManager.indicator import MLIndicatorCalculator
 from TradeManager.trade_manager import TradeManager
 from datetime import datetime, timedelta
 from logger.logger import logger
+import yaml
+import threading
+
 
 # Load environment variables from .env file
 load_dotenv()
 
+# Load config.yaml
+def load_config():
+    with open(os.path.join(os.path.dirname(__file__), 'config.yaml'), 'r') as f:
+        return yaml.safe_load(f)
+config = load_config()
+
 # Main execution
 if __name__ == "__main__":
     logger.info("Starting the application...")
+
     account_number = int(os.getenv('MT5_ACCOUNT'))
     password = os.getenv('MT5_PASSWORD')
     server = os.getenv('MT5_SERVER')
 
-    # Get symbols from the environment variable
-    symbols = os.getenv('MT5_SYMBOLS').split(',')
+    # Get symbols from the environment variable or config
+    symbols = os.getenv('MT5_SYMBOLS')
+    if symbols:
+        symbols = symbols.split(',')
+    else:
+        symbols = config.get('SYMBOLS', [])
 
     connector = MT5Connector(account_number, password, server)
     if not connector.initialize():
         logger.error("Failed to initialize MT5 Connector.")
         exit(1)
 
-    volume = float(os.getenv('TRADE_VOL'))
+    volume = float(os.getenv('TRADE_VOL', config.get('TRADE_VOL', 0.1)))
     trade_manager = TradeManager(volume)
 
     # Store MLIndicatorCalculator instances for each symbol
@@ -122,11 +136,12 @@ if __name__ == "__main__":
     try:
         while True:
             trade_manager.monitor_trade()
-            for symbol in symbols:
+
+            def process_symbol(symbol):
                 rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M2, 0, 1000)
                 if rates is None or len(rates) == 0:
                     logger.error(f"No data returned for symbol {symbol}. Skipping.")
-                    continue
+                    return
 
                 close_prices = np.array([rate['close'] for rate in rates])
                 low_prices = np.array([rate['low'] for rate in rates])
@@ -135,7 +150,7 @@ if __name__ == "__main__":
 
                 if len(close_prices) < 50:
                     logger.error(f"Not enough close prices for symbol {symbol}. Skipping.")
-                    continue
+                    return
 
                 # Create a DataFrame for prediction
                 prediction_df = pd.DataFrame({
@@ -148,16 +163,31 @@ if __name__ == "__main__":
                 # Make predictions using the respective indicator calculator
                 try:
                     prediction_df.reset_index(drop=True, inplace=True)
-
+                    # Calculate ATR for stop-loss/take-profit
+                    atr = None
+                    try:
+                        indicator_calculator = indicator_calculators[symbol]
+                        indicator_calculator.calculate_traditional_indicators(prediction_df)
+                        atr = prediction_df['atr'].iloc[-1] if 'atr' in prediction_df.columns else None
+                    except Exception as e:
+                        logger.error(f"Error calculating ATR for {symbol}: {e}")
                     signal = indicator_calculators[symbol].predict_signal(prediction_df)
                     if signal == "buy":
-                        trade_manager.place_order(symbol, "buy")
+                        trade_manager.place_order(symbol, "buy", atr=atr)
                         logger.info(f"Placed buy order for {symbol}.")
                     elif signal == "sell":
-                        trade_manager.place_order(symbol, "sell")
+                        trade_manager.place_order(symbol, "sell", atr=atr)
                         logger.info(f"Placed sell order for {symbol}.")
                 except Exception as e:
                     logger.error(f"Error during prediction for {symbol}: {e}")
+
+            threads = []
+            for symbol in symbols:
+                t = threading.Thread(target=process_symbol, args=(symbol,))
+                t.start()
+                threads.append(t)
+            for t in threads:
+                t.join()
 
             # time.sleep(1)
             logger.info("Checking for next trade")
