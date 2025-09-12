@@ -141,22 +141,23 @@ class MLIndicatorCalculator(IndicatorCalculator):
         self.scaler = StandardScaler()
         self.is_model_trained = False
         self.feature_names = None
+        self.selector = None  # Will hold SelectFromModel
         self.load_model()
 
     def save_model(self):
-        """Saves the trained ensemble models, scaler, and feature hash to disk."""
+        """Saves the trained ensemble models, scaler, selector, and feature hash to disk."""
         try:
-            joblib.dump({'xgb_model': self.xgb_model, 'rf_model': self.rf_model, 'lgbm_model': self.lgbm_model, 'scaler': self.scaler}, self.model_path)
+            joblib.dump({'xgb_model': self.xgb_model, 'rf_model': self.rf_model, 'lgbm_model': self.lgbm_model, 'scaler': self.scaler, 'selector': self.selector}, self.model_path)
             # Save feature hash for auto-cleanup
             if self.feature_names:
                 with open(self.feature_hash_path, 'w') as f:
                     f.write(get_feature_hash(self.feature_names))
-            logger.info(f"Ensemble models (XGB, RF, LGBM), scaler, and symbol '{self.symbol_name}' saved to {self.model_path}.")
+            logger.info(f"Ensemble models (XGB, RF, LGBM), scaler, selector, and symbol '{self.symbol_name}' saved to {self.model_path}.")
         except Exception as e:
-            logger.error(f"Failed to save ensemble models, scaler, and symbol: {e}")
+            logger.error(f"Failed to save ensemble models, scaler, selector, and symbol: {e}")
 
     def load_model(self):
-        """Loads the trained ensemble models, scaler, and checks feature hash for auto-cleanup."""
+        """Loads the trained ensemble models, scaler, selector, and checks feature hash for auto-cleanup."""
         if os.path.exists(self.model_path):
             try:
                 saved_objects = joblib.load(self.model_path)
@@ -164,6 +165,7 @@ class MLIndicatorCalculator(IndicatorCalculator):
                 self.rf_model = saved_objects['rf_model']
                 self.lgbm_model = saved_objects['lgbm_model']
                 self.scaler = saved_objects['scaler']
+                self.selector = saved_objects.get('selector', None)
                 # Check feature hash
                 if os.path.exists(self.feature_hash_path):
                     with open(self.feature_hash_path, 'r') as f:
@@ -173,9 +175,9 @@ class MLIndicatorCalculator(IndicatorCalculator):
                 else:
                     self.saved_feature_hash = None
                 self.is_model_trained = True
-                logger.info(f"Loaded ensemble models (XGB, RF, LGBM), scaler, and symbol '{self.symbol_name}' from {self.model_path}.")
+                logger.info(f"Loaded ensemble models (XGB, RF, LGBM), scaler, selector, and symbol '{self.symbol_name}' from {self.model_path}.")
             except Exception as e:
-                logger.error(f"Failed to load ensemble models, scaler, and symbol: {e}")
+                logger.error(f"Failed to load ensemble models, scaler, selector, and symbol: {e}")
                 self.is_model_trained = False
         else:
             logger.info("No existing model found. A new model will be trained.")
@@ -288,9 +290,9 @@ class MLIndicatorCalculator(IndicatorCalculator):
         grid_search.fit(X_scaled, y)
 
         # Feature selection: keep only important features
-        selector = SelectFromModel(grid_search.best_estimator_, prefit=True, threshold='median')
-        X_selected = selector.transform(X_scaled)
-        selected_features = X.columns[selector.get_support(indices=True)]
+        self.selector = SelectFromModel(grid_search.best_estimator_, prefit=True, threshold='median')
+        X_selected = self.selector.transform(X_scaled)
+        selected_features = X.columns[self.selector.get_support(indices=True)]
         logger.info(f"Selected features: {list(selected_features)}")
 
         # Retrain XGBoost on selected features
@@ -332,10 +334,12 @@ class MLIndicatorCalculator(IndicatorCalculator):
         try:
             X, _ = self.prepare_combined_features(df)
             X_scaled = self.scaler.transform(X)
-            # Use only selected features if feature selection was applied
-            from sklearn.feature_selection import SelectFromModel
-            selector = SelectFromModel(self.xgb_model, prefit=True, threshold='median')
-            X_selected = selector.transform(X_scaled)
+            # Use the same selector as during training
+            if self.selector is not None:
+                X_selected = self.selector.transform(X_scaled)
+            else:
+                logger.error("Feature selector not found. Cannot proceed with prediction.")
+                return "no signal"
 
             # Ensemble prediction: average probabilities and majority vote
             xgb_probs = self.xgb_model.predict_proba(X_selected)
