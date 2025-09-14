@@ -268,8 +268,17 @@ class MLIndicatorCalculator(IndicatorCalculator):
         return features.drop('target', axis=1), features['target']
 
     def train_model(self, df):
-        if self.is_model_trained:
-            logger.info("Model is already trained. Loading existing model.")
+        import datetime
+        # Only retrain if model file does not exist or is not from today
+        retrain = True
+        if os.path.exists(self.model_path):
+            last_modified = datetime.datetime.fromtimestamp(os.path.getmtime(self.model_path))
+            today = datetime.datetime.now().date()
+            if last_modified.date() == today:
+                logger.info(f"Model file {self.model_path} is from today. Loading existing model.")
+                self.load_model()
+                retrain = False
+        if not retrain:
             return
 
         from sklearn.feature_selection import SelectFromModel

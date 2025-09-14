@@ -141,9 +141,9 @@ class TradeManager:
                 if position.profit >= self.atr_takeprofit_mult:
                     logger.info(f"Profit target reached on {position.symbol}! Closing trade.")
                     self.close_order(position.ticket, position.symbol, position.volume)
-                elif position.profit <= -self.atr_stoploss_mult:
-                    logger.info(f"Loss threshold reached on {position.symbol}! Closing trade.")
-                    self.close_order(position.ticket, position.symbol, position.volume)
+                # elif position.profit <= -self.atr_stoploss_mult:
+                #     logger.info(f"Loss threshold reached on {position.symbol}! Closing trade.")
+                #     self.close_order(position.ticket, position.symbol, position.volume)
         else:
             logger.info(f"No open positions.")
 
